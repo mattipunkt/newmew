@@ -1,0 +1,13 @@
+certifi==2024.8.30
+charset-normalizer==3.4.0
+idna==3.10
+isodate==0.6.1
+mpegdash==0.4.0
+platformdirs==4.3.6
+python-dateutil==2.9.0.post0
+ratelimit==2.2.1
+requests==2.32.3
+six==1.16.0
+tidalapi==0.7.6
+typing_extensions==4.12.2
+urllib3==2.2.3
