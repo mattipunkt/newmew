@@ -4,9 +4,43 @@ from platformdirs import *
 import os
 import json
 from datetime import datetime
+import sqlite3
+import telebot
+from dotenv import load_dotenv
+import io
+import contextlib
+import time
 
 appname = "newmew"
 user_data_file = user_data_dir(appname) + "/credentials.json"
+load_dotenv()
+
+
+class Database:
+    con = sqlite3.Connection
+    cur = sqlite3.Cursor
+
+    def __init__(self) -> None:
+        self.con = sqlite3.connect(user_data_dir(appname) + "/database.sqlite")
+        self.cur = self.con.cursor()
+        self.cur.execute(
+            "CREATE TABLE IF NOT EXISTS users (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT,\
+            telegram_user_id INTEGER,\
+            tidal_token_type STRING,\
+            tidal_access_token STRING,\
+            tidal_refresh_token STRING,\
+            tidal_expiry_time STRING)"
+            )
+        pass
+
+    def add_user(self, telegram_user_id, tidal_token_type, tidal_access_token, tidal_refresh_token, tidal_expiry_time):
+        self.cur.execute("INSERT OR IGNORE INTO USERS(telegram_user_id, tidal_token_type, tidal_access_token, tidal_refresh_token, tidal_expiry_time) VALUES (?, ?, ?, ?, ?)", (telegram_user_id, tidal_token_type, tidal_access_token, tidal_refresh_token, tidal_expiry_time))
+        self.con.commit()
+    
+    def close(self):
+        self.con.close()
+
 
 
 
@@ -23,7 +57,7 @@ def login(session):
         credentials["access_token"] = session.access_token
         credentials["refresh_token"] = session.refresh_token
         expiry_time = session.expiry_time
-        credentials["expiry_time"] = expiry_time.strftime(format='%s')
+        credentials["expiry_time"] = session.expiry_time.strftime(format='%s')
         if not os.path.exists(user_data_dir(appname)):
             print("created folder")
             path = user_data_dir(appname) + "/"
@@ -57,10 +91,38 @@ def check_releases(session, artists):
                 else:
                     print("Found new Album: " + release.name)
 
+#config = tidalapi.Config()
+#session = tidalapi.Session(config)
+#
+#login(session)
+#artists = get_artists(session)
+#check_releases(session, artists)
 
-config = tidalapi.Config()
-session = tidalapi.Session(config)
 
-login(session)
-artists = get_artists(session)
-check_releases(session, artists)
+
+bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_KEY"), parse_mode="MARKDOWN") # You can set parse_mode by default. HTML or MARKDOWN
+
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.send_message(message.chat.id, "Hey there!\n\nThis Bot checks your favorite TIDAL-Artists twice a day for new releases and sends you a message, when there is one!")
+    bot.send_message(message.chat.id, "Be aware that, if you login in the next step, your login keys (not your passwords) are stored in the database. Without that, the bot could not search through your saved artists!\nThis would allow me to use your account through the TIDAL-API. *However, there no passwords saved!*")
+    config = tidalapi.Config()
+    session = tidalapi.Session(config)
+    with contextlib.redirect_stdout(io.StringIO()) as f:
+        link = session.login_oauth()
+        print(link[0].verification_uri_complete)
+        bot.send_message(message.chat.id, "Click this link and login to TIDAL: \n\n" + f.getvalue() + "\nThis link is valid for 300 seconds.")
+        while link[1].running() is True:
+            time.sleep(1)
+        if link[1].done() is True:
+            bot.send_message(message.chat.id, "Your login was successful!")
+            db = Database()
+            db.add_user(message.chat.id, session.token_type, session.access_token, session.refresh_token, str(session.expiry_time.strftime(format='%s')))
+        else:            
+            bot.send_message(message.chat.id, "There was an error while logging you in!")
+
+
+
+    
+bot.infinity_polling()
