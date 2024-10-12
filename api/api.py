@@ -11,9 +11,19 @@ import io
 import contextlib
 import time
 
+from threading import Thread
+
 appname = "newmew"
 user_data_file = user_data_dir(appname) + "/credentials.json"
 load_dotenv()
+
+
+bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_KEY"), parse_mode="MARKDOWN")
+
+
+
+def bot_polling():
+    bot.infinity_polling()
 
 
 class Database:
@@ -21,6 +31,10 @@ class Database:
     cur = sqlite3.Cursor
 
     def __init__(self) -> None:
+        if not os.path.exists(user_data_dir(appname)):
+            print("created folder")
+            path = user_data_dir(appname) + "/"
+            os.makedirs(path, exist_ok=True)
         self.con = sqlite3.connect(user_data_dir(appname) + "/database.sqlite")
         self.cur = self.con.cursor()
         self.cur.execute(
@@ -47,6 +61,31 @@ class Database:
     
     def delete_user(self, telegram_user_id):
         self.cur.execute("DELETE FROM users WHERE telegram_user_id='" + str(telegram_user_id) + "'")
+        self.con.commit()
+
+    def get_users(self):
+        return self.cur.execute("SELECT * FROM users")
+    
+
+    def create_user_table(self, user_id):
+        self.cur.execute("CREATE TABLE IF NOT EXISTS user_"+ str(user_id) +" (id INTEGER PRIMARY KEY AUTOINCREMENT, artist STRING, title STRING, release_date STRING)")
+        self.con.commit()
+
+
+    def add_release_to_user_table(self, user_id, artist, album, release_date):
+        self.cur.execute("INSERT OR IGNORE INTO user_"+ str(user_id) +" (artist, title, release_date) VALUES (?, ?, ?)", (artist, album, release_date))
+        self.con.commit()
+
+    def get_user_release(self, user_id, artist, album):
+        return self.cur.execute("SELECT * FROM user_"+ str(user_id) +" WHERE artist=? AND title=?", (artist, album))
+    
+
+    def get_user_releases(self, user_id):
+        return self.cur.execute("SELECT * FROM user_"+ str(user_id))
+
+
+    def delete_user_release(self, user_id, release_id):
+        self.cur.execute("DELETE FROM user_" + str(user_id) + " WHERE id=?", (release_id))
         self.con.commit()
 
 
@@ -83,34 +122,63 @@ def login(session):
         print("Successfully logged in to TIDAL API!")
 
 
-def get_artists(session):
-    return session.user.favorites.artists()
-    
-        
 
-def check_releases(session, artists):
+def check_releases(session, telegram_id):
+    db = Database()
+    artists = session.user.favorites.artists()
     for artist in artists:
-        print(artist.name)
         ep_singles = artist.get_ep_singles()
         for release in ep_singles:
             if ((datetime.now() - release.release_date).days) <= 2:
-                print("Found new EP/Single: " + release.name)
+                already_sent_check = db.get_user_release(telegram_id, artist.name, release.name)
+                if already_sent_check.fetchall() == []:
+                    bot.send_message(telegram_id, "Found new EP/Single by *" + artist.name + "*: " + release.name)
+                    db.add_release_to_user_table(telegram_id, artist.name, release.name, datetime.strftime(release.release_date, "%d-%m-%Y"))
+                    print("Found new EP/Single: " + release.name)
         albums = artist.get_albums()
         for release in albums:
             if ((datetime.now() - release.release_date).days) <= 2:
                 if ((datetime.now() - release.release_date).days) < 0:
-                    print("Found new UNRELEASED Album : " + release.name)
+                    already_sent_check = db.get_user_release(telegram_id, artist.name, release.name)
+                    if already_sent_check.fetchall() == []:
+                        bot.send_message(telegram_id, "Found new *UNRELEASED* Album by *" + artist.name + "*: " + release.name + "\n_Planned release date is "+ datetime.strftime(release.release_date, "%d.%m.%Y") + "_" )
+                        db.add_release_to_user_table(telegram_id, artist.name, release.name, datetime.strftime(release.release_date, "%d-%m-%Y"))
+                        print("Found new *UNRELEASED* Album: " + release.name)
                 else:
-                    print("Found new Album: " + release.name)
+                    already_sent_check = db.get_user_release(telegram_id, artist.name, release.name)
+                    if already_sent_check.fetchall() == []:
+                        bot.send_message(telegram_id, "Found new Album by *" + artist.name + "*: " + release.name)
+                        db.add_release_to_user_table(telegram_id, artist.name, release.name, datetime.strftime(release.release_date, "%d-%m-%Y"))
+                        print("Found new Album: " + release.name)
+    db.close()
 
 
 
-#Periodic Task
+def periodic_user_check():
+    print("Start user check!")
+    db = Database()
+    users = db.get_users()
+    for user in users:
+        db.create_user_table(user[1])
+        session = tidalapi.Session()
+        session.load_oauth_session(user[2], user[3], user[4], datetime.fromtimestamp(int(user[5])))
+        print("Logged in as user: " + session.user.username)
+        check_releases(session, user[1])
+    db.close()
 
 
 
+def periodic_clean_up():
+    db = Database()
+    users = db.get_users()
+    for user in users:
+        db.create_user_table(user[1])
+        releases = db.get_user_releases(user[1]).fetchall()
+        for release in releases:
+            release_date = datetime.strptime(release[3], "%d-%m-%Y")
+            if (datetime.now() - release_date).days > 2:
+                db.delete_user_release(release[0])
 
-bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_KEY"), parse_mode="MARKDOWN") # You can set parse_mode by default. HTML or MARKDOWN
 
 
 @bot.message_handler(commands=['start'])
@@ -148,6 +216,17 @@ def send_stop(message):
     db.close()
 
 
+def periodic():
+    periodic_clean_up()
+    periodic_user_check()
+    time.sleep(259200)
 
 
-bot.infinity_polling()
+
+
+
+if __name__ == '__main__':
+    Thread(target=bot_polling).start()
+    time.sleep(10)
+    print("Start second thread")
+    Thread(target=periodic).start()
