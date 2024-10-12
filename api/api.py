@@ -38,13 +38,29 @@ def login(session):
 
 
 def get_artists(session):
-    my_artists = session.user.favorites.artists()
-    for artist in my_artists:
+    return session.user.favorites.artists()
+    
+        
+
+def check_releases(session, artists):
+    for artist in artists:
         print(artist.name)
+        ep_singles = artist.get_ep_singles()
+        for release in ep_singles:
+            if ((datetime.now() - release.release_date).days) <= 2:
+                print("Found new EP/Single: " + release.name)
+        albums = artist.get_albums()
+        for release in albums:
+            if ((datetime.now() - release.release_date).days) <= 2:
+                if ((datetime.now() - release.release_date).days) < 0:
+                    print("Found new UNRELEASED Album : " + release.name)
+                else:
+                    print("Found new Album: " + release.name)
 
 
 config = tidalapi.Config()
 session = tidalapi.Session(config)
 
 login(session)
-get_artists(session)
+artists = get_artists(session)
+check_releases(session, artists)
