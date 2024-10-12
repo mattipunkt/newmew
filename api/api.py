@@ -37,7 +37,19 @@ class Database:
     def add_user(self, telegram_user_id, tidal_token_type, tidal_access_token, tidal_refresh_token, tidal_expiry_time):
         self.cur.execute("INSERT OR IGNORE INTO USERS(telegram_user_id, tidal_token_type, tidal_access_token, tidal_refresh_token, tidal_expiry_time) VALUES (?, ?, ?, ?, ?)", (telegram_user_id, tidal_token_type, tidal_access_token, tidal_refresh_token, tidal_expiry_time))
         self.con.commit()
+
+    def check_existing_user(self, telegram_user_id):
+        user = self.cur.execute("SELECT id FROM users where telegram_user_id='"+ str(telegram_user_id) +"'")
+        if user.fetchall() == []:
+            return False
+        else:
+            return True
     
+    def delete_user(self, telegram_user_id):
+        self.cur.execute("DELETE FROM users WHERE telegram_user_id='" + str(telegram_user_id) + "'")
+        self.con.commit()
+
+
     def close(self):
         self.con.close()
 
@@ -91,12 +103,10 @@ def check_releases(session, artists):
                 else:
                     print("Found new Album: " + release.name)
 
-#config = tidalapi.Config()
-#session = tidalapi.Session(config)
-#
-#login(session)
-#artists = get_artists(session)
-#check_releases(session, artists)
+
+
+#Periodic Task
+
 
 
 
@@ -105,24 +115,39 @@ bot = telebot.TeleBot(os.getenv("TELEGRAM_BOT_KEY"), parse_mode="MARKDOWN") # Yo
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.send_message(message.chat.id, "Hey there!\n\nThis Bot checks your favorite TIDAL-Artists twice a day for new releases and sends you a message, when there is one!")
-    bot.send_message(message.chat.id, "Be aware that, if you login in the next step, your login keys (not your passwords) are stored in the database. Without that, the bot could not search through your saved artists!\nThis would allow me to use your account through the TIDAL-API. *However, there no passwords saved!*")
-    config = tidalapi.Config()
-    session = tidalapi.Session(config)
-    with contextlib.redirect_stdout(io.StringIO()) as f:
-        link = session.login_oauth()
-        print(link[0].verification_uri_complete)
-        bot.send_message(message.chat.id, "Click this link and login to TIDAL: \n\n" + f.getvalue() + "\nThis link is valid for 300 seconds.")
-        while link[1].running() is True:
-            time.sleep(1)
-        if link[1].done() is True:
-            bot.send_message(message.chat.id, "Your login was successful!")
-            db = Database()
-            db.add_user(message.chat.id, session.token_type, session.access_token, session.refresh_token, str(session.expiry_time.strftime(format='%s')))
-        else:            
-            bot.send_message(message.chat.id, "There was an error while logging you in!")
+    db = Database()
+    if db.check_existing_user(message.chat.id) is True:
+        bot.send_message(message.chat.id, "Whoa, slowly! You are already registered in the release search bot.")
+    else:
+        bot.send_message(message.chat.id, "Hey there!\n\nThis Bot checks your favorite TIDAL-Artists twice a day for new releases and sends you a message, when there is one!")
+        bot.send_message(message.chat.id, "Be aware that, if you login in the next step, your login keys (not your passwords) are stored in the database. Without that, the bot could not search through your saved artists!\nThis would allow me to use your account through the TIDAL-API. *However, there no passwords saved!*\n\nBy sending the command /stop, all of your data on this bot will be safely deleted.")
+        config = tidalapi.Config()
+        session = tidalapi.Session(config)
+        with contextlib.redirect_stdout(io.StringIO()) as f:
+            link = session.login_oauth()
+            print(link[0].verification_uri_complete)
+            bot.send_message(message.chat.id, "Click this link and login to TIDAL: \n\n" + f.getvalue() + "\nThis link is valid for 300 seconds.")
+            while link[1].running() is True:
+                time.sleep(1)
+            if link[1].done() is True:
+                bot.send_message(message.chat.id, "Your login was successful!")
+                db.add_user(message.chat.id, session.token_type, session.access_token, session.refresh_token, str(session.expiry_time.strftime(format='%s')))
+            else:            
+                bot.send_message(message.chat.id, "There was an error while logging you in!")
+    db.close()
+
+
+@bot.message_handler(commands=['stop'])
+def send_stop(message):
+    db = Database()
+    if db.check_existing_user(message.chat.id) is True:
+        bot.send_message(message.chat.id, "Ok, your credentials and data will be deleted!\nThank you for using this bot. :D")
+        db.delete_user(message.chat.id)
+    else:
+        bot.send_message(message.chat.id, "Hhmmm??!?!?")
+    db.close()
 
 
 
-    
+
 bot.infinity_polling()
